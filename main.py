@@ -4,9 +4,9 @@ import torch.nn as nn
 class FeedForward(nn.Module):
   def __init__(self, cfg):
     super().__init__()
-    self.fc1 = nn.Linear(cfg['emb_dim'], cfg['hidden_dim'], dtype=cfg[''], bias=False)
-    self.fc2 = nn.Linear(cfg['emb_dim'], cfg['hidden_dim'], dtype=cfg[''], bias=False)
-    self.fc3 = nn.Linear(cfg['hidden_dim'], cfg['emb_dim'], dtype=cfg[''], bias=False)
+    self.fc1 = nn.Linear(cfg['emb_dim'], cfg['hidden_dim'], dtype=cfg['dtype'], bias=False)
+    self.fc2 = nn.Linear(cfg['emb_dim'], cfg['hidden_dim'], dtype=cfg['dtype'], bias=False)
+    self.fc3 = nn.Linear(cfg['hidden_dim'], cfg['emb_dim'], dtype=cfg['dtype'], bias=False)
 
   def forward(self, x):
     x_fc1 = self.fc1(x)
@@ -17,7 +17,7 @@ class FeedForward(nn.Module):
   
 class RMSNormalisation(nn.Module):
   def __init__(self, emb_dim, eps=1e-6, bias=False, qwen3_compatible=True):
-    super.__init__()
+    super().__init__()
     self.eps = eps
     self.qwen3_compatible = qwen3_compatible
     #initialise the trainable parameters for RMSNorm
@@ -35,7 +35,7 @@ class RMSNormalisation(nn.Module):
 
     mean_square = x.pow(2).mean(dim=-1, keepdim=True)
     norm_x = x * torch.rsqrt(mean_square + self.eps)
-    norm_x = x * self.scale
+    norm_x = norm_x * self.scale
 
     if self.shift is not None:
       norm_x = norm_x + self.shift
@@ -58,11 +58,11 @@ def compute_rope_params(head_dims, theta_base=10000, context_length=4096, dtype=
   angles = position[:, None] * inv_freq[None, :] # -> (context_length, head_dims/2)
 
   #expand angles to match head_dim(duplicates angles)
-  angles = torch.cat(angles, angles, dim=1) # -> (context_length, head_dims)
+  angles = torch.cat([angles, angles], dim=1) # -> (context_length, head_dims)
 
   #precompute sine and cosine
   cos = torch.cos(angles)
-  sin = torch.cos(angles)
+  sin = torch.sin(angles)
 
   return cos, sin
 
@@ -86,7 +86,7 @@ def apply_rope(x, cos, sin):
 
 class GroupQueryAttention(nn.Module):
   def __init__(self, d_in, num_heads, num_kv_groups, head_dim=None, qk_norm=False, dtype=None):
-    super.__init__()
+    super().__init__()
     assert num_heads % num_kv_groups == 0, "num_heads must be divisible by num_kv_groups"
 
     self.num_heads = num_heads
@@ -102,7 +102,7 @@ class GroupQueryAttention(nn.Module):
 
     self.W_query = nn.Linear(d_in, self.d_out, bias=False, dtype=dtype)
     self.W_key = nn.Linear(d_in, num_kv_groups * head_dim, bias=False, dtype=dtype)
-    self.W_value = nn.Linear(d_in, num_kv_groups & head_dim, bias=False, dtype=dtype)
+    self.W_value = nn.Linear(d_in, num_kv_groups * head_dim, bias=False, dtype=dtype)
 
     self.out_proj = nn.Linear(self.d_out, d_in, bias=False, dtype=dtype)
 
@@ -122,7 +122,7 @@ class GroupQueryAttention(nn.Module):
     #reshaping to split heads
     queries = queries.view(b, num_tokens, self.num_heads, self.head_dim).transpose(1, 2)  # -> (b, num_heads, num_tokens, head_dim)
     keys = keys.view(b, num_tokens, self.num_kv_groups, self.head_dim).transpose(1, 2)    # -> (b, num_kv_groups, num_tokens, head_dim)
-    values = values.view(b, num_tokens, self.num_kv_groups, self.head_dim).tranpose(1, 2) # -> (b, num_kv_groups, num_tokens, head_dim)
+    values = values.view(b, num_tokens, self.num_kv_groups, self.head_dim).transpose(1, 2) # -> (b, num_kv_groups, num_tokens, head_dim)
 
     #optional normalisation
     if self.q_norm:
@@ -139,15 +139,16 @@ class GroupQueryAttention(nn.Module):
     #attention
     attn_scores = queries @ keys.transpose(2, 3)
     attn_scores = attn_scores.masked_fill(mask, -torch.inf)
-    attn_weights = torch.softmax(attn_scores / self.head_dim ** 2, dim=-1)
+    attn_weights = torch.softmax(attn_scores / self.head_dim ** 0.5, dim=-1)
 
-    context = attn_weights @ values.transpose(1, 2).reshape(b, num_tokens, self.d_out)
+    context = attn_weights @ values
+    context = context.transpose(1, 2).contiguous().view(b, num_tokens, self.d_out)
 
     return self.out_proj(context)
   
 class TransformerBlock(nn.Module):
   def __init__(self, cfg):
-    super.__init__()
+    super().__init__()
     self.attn = GroupQueryAttention(
       d_in=cfg["emb_dim"],
       num_heads=cfg["n_heads"],
@@ -157,8 +158,8 @@ class TransformerBlock(nn.Module):
       dtype=cfg["dtype"]
     )
     self.ffn = FeedForward(cfg)
-    self.norm1 = RMSNormalisation(cfg["emb_din"], eps=1e-6)
-    self.norm2 = RMSNormalisation(cfg["emb_din"], eps=1e-6)
+    self.norm1 = RMSNormalisation(cfg["emb_dim"], eps=1e-6)
+    self.norm2 = RMSNormalisation(cfg["emb_dim"], eps=1e-6)
 
   def forward(self, x, mask, cos, sin):
     original_x = x
@@ -175,7 +176,7 @@ class TransformerBlock(nn.Module):
   
 class Qwen3Model(nn.Module):
   def __init__(self, cfg):
-    super.__init__()
+    super().__init__()
 
     self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"])
     
@@ -184,7 +185,7 @@ class Qwen3Model(nn.Module):
     )
 
     self.final_norm = RMSNormalisation(cfg["emb_dim"])
-    self.out_head = nn.Linear(cfg["emd_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
+    self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
 
     if cfg["head_dim"] is None:
         head_dim = cfg["emb_dim"] // cfg["n_heads"]
@@ -206,9 +207,9 @@ class Qwen3Model(nn.Module):
     x = tok_emb
 
     num_tokens = x.shape[1]
-    mask = mask = torch.triu(torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1)
+    mask = torch.triu(torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1)
         
-    for block in self.trf_blocks:
+    for block in self.transformer_blocks:
         x = block(x, mask, self.cos, self.sin)
     x = self.final_norm(x)
     logits = self.out_head(x.to(self.cfg["dtype"]))
