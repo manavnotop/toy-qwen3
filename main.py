@@ -144,3 +144,72 @@ class GroupQueryAttention(nn.Module):
     context = attn_weights @ values.transpose(1, 2).reshape(b, num_tokens, self.d_out)
 
     return self.out_proj(context)
+  
+class TransformerBlock(nn.Module):
+  def __init__(self, cfg):
+    super.__init__()
+    self.attn = GroupQueryAttention(
+      d_in=cfg["emb_dim"],
+      num_heads=cfg["n_heads"],
+      head_dim=cfg["head_dim"],
+      num_kv_groups=cfg["n_kv_groups"],
+      qk_norm=cfg["qk_norm"],
+      dtype=cfg["dtype"]
+    )
+    self.ffn = FeedForward(cfg)
+    self.norm1 = RMSNormalisation(cfg["emb_din"], eps=1e-6)
+    self.norm2 = RMSNormalisation(cfg["emb_din"], eps=1e-6)
+
+  def forward(self, x, mask, cos, sin):
+    original_x = x
+    x = self.norm1(x)
+    x = self.attn(x, mask, cos, sin)
+    x = x + original_x
+
+    original_x = x 
+    x = self.norm2(x)
+    x = self.ffn(x)
+    x = x + original_x
+
+    return x
+  
+class Qwen3Model(nn.Module):
+  def __init__(self, cfg):
+    super.__init__()
+
+    self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"])
+    
+    self.transformer_blocks = nn.ModuleList(
+      TransformerBlock(cfg) for _ in range(cfg["n_layers"])
+    )
+
+    self.final_norm = RMSNormalisation(cfg["emb_dim"])
+    self.out_head = nn.Linear(cfg["emd_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
+
+    if cfg["head_dim"] is None:
+        head_dim = cfg["emb_dim"] // cfg["n_heads"]
+    else:
+        head_dim = cfg["head_dim"]
+  
+    cos, sin = compute_rope_params(
+        head_dim=head_dim,
+        theta_base=cfg["rope_base"],
+        context_length=cfg["context_length"]
+    )
+    self.register_buffer("cos", cos, persistent=False)
+    self.register_buffer("sin", sin, persistent=False)
+    self.cfg = cfg
+
+  def forward(self, in_idx):
+    #forward pass
+    tok_emb = self.tok_emb(in_idx)
+    x = tok_emb
+
+    num_tokens = x.shape[1]
+    mask = mask = torch.triu(torch.ones(num_tokens, num_tokens, device=x.device, dtype=torch.bool), diagonal=1)
+        
+    for block in self.trf_blocks:
+        x = block(x, mask, self.cos, self.sin)
+    x = self.final_norm(x)
+    logits = self.out_head(x.to(self.cfg["dtype"]))
+    return logits
