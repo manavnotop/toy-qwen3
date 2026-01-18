@@ -1,55 +1,75 @@
-import torch
+"""Text generation script for Toy Qwen3 character-level language model."""
+
 import contextlib
 import json
-from src.toy_qwen3.model import Qwen3Model
 
-#select device
-device = "mps" if torch.backends.mps.is_available() else "cpu"
+import torch
+
+from src.toy_qwen3 import DEFAULT_MODEL_PATH, VOCAB_PATH, Qwen3Model, get_default_config
+
+# Select device - check CUDA first for proper autocast support
+if torch.cuda.is_available():
+    device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
 print(f"Using device: {device}")
 
-#load character vocabulary
-with open("char_vocab.json", "r") as f:
+# Load character vocabulary
+with open(VOCAB_PATH, "r", encoding="utf-8") as f:
     chars = json.load(f)
 
-#create character-index mapping
+# Create character-index mapping
 char_to_idx = {c: i for i, c in enumerate(chars)}
 idx_to_char = {i: c for i, c in enumerate(chars)}
 
-#converts tensor of indicies into string
-def decode(tensor):
-    return ''.join([idx_to_char[i.item()] for i in tensor])
 
-cfg = {
-    "vocab_size": len(chars),   #number of unique characters(tokens)
-    "emb_dim": 128,             #token embedding dimension
-    "n_heads": 4,               #total number of attention heads
-    "n_kv_groups": 2,           #group of kv heads
-    "n_layers": 4,              #number of transformer layers
-    "hidden_dim": 128,          #feedforward hidden dimension
-    "context_length": 128,      #max input sequence length
-    "rope_base": 10000.0,       #rotary embedding base (for RoPE)
-    "qk_norm": False,           #whether to use qk_normalisation
-    "dtype": torch.float32 if device == "mps" else torch.bfloat16,         #precision used in model (bfloat16 or float32)
-    "head_dim": None,           #will be computed as emb_dim // n_heads
-}
+def decode(tensor: torch.Tensor) -> str:
+    """Decode a tensor of token indices to a string."""
+    return "".join([idx_to_char[i.item()] for i in tensor])
 
 
-def generate(model, prompt, max_new_tokens=100, temperature=0.85):
-    model.eval() #put model in inference mode
+cfg = get_default_config(len(chars), device)
 
-    #convert input prompt string to tensor of token indices
-    encoded = torch.tensor(
-        [char_to_idx.get(c, 0) for c in prompt], 
-        dtype=torch.long
-    ).unsqueeze(0).to(device)
+
+def generate(
+    model: Qwen3Model,
+    prompt: str,
+    max_new_tokens: int = 100,
+    temperature: float = 0.85,
+) -> str:
+    """Generate text from a prompt using the model.
+
+    Args:
+        model: The Qwen3Model to use for generation.
+        prompt: Input prompt string.
+        max_new_tokens: Number of tokens to generate.
+        temperature: Sampling temperature (higher = more random).
+
+    Returns:
+        Generated text including the prompt.
+    """
+    model.eval()  # Put model in inference mode
+
+    # Convert input prompt string to tensor of token indices
+    encoded = (
+        torch.tensor(
+            [char_to_idx.get(c, 0) for c in prompt],
+            dtype=torch.long,
+        )
+        .unsqueeze(0)
+        .to(device)
+    )
 
     autocast_context = (
         torch.autocast(device_type="cuda", dtype=cfg["dtype"])
-        if torch.cuda.is_available() else contextlib.nullcontext()
+        if device == "cuda"
+        else contextlib.nullcontext()
     )
 
     for _ in range(max_new_tokens):
-        input_ids = encoded[:, -cfg["context_length"]:]
+        input_ids = encoded[:, -cfg["context_length"] :]
         with torch.no_grad(), autocast_context:
             logits = model(input_ids)
             logits = logits[:, -1, :] / temperature
@@ -59,12 +79,12 @@ def generate(model, prompt, max_new_tokens=100, temperature=0.85):
 
     return decode(encoded[0])
 
+
 model = Qwen3Model(cfg).to(device).to(cfg["dtype"])
-#PLEASE MAKE SURE YOU LOAD THE RIGHT MODEL ACCORIDNG TO THE EPOCHS YOU USED AND THE NAME WITH WHICH MODEL IS SAVED
-model.load_state_dict(torch.load("toy_qwen3_24epochs.pth"))
+model.load_state_dict(torch.load(DEFAULT_MODEL_PATH, weights_only=True))
 model.eval()
 
-print("✅ Model loaded and ready for generation!\n")
+print("Model loaded and ready for generation!\n")
 
 prompt = "To be or not to be, that is the"
 print(f"Prompt: {repr(prompt)}")
