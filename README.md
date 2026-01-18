@@ -13,12 +13,13 @@ A **toy implementation of Qwen3 architecture** for learning purposes. This proje
 - Loss plotted and saved over training epochs
 - Generation script with support for temperature sampling
 - MPS (Mac) and CUDA GPU support with `autocast` context
+- Rich terminal output for training progress
 
 ---
 
 ## 📈 Training Results
 
-Trained for **24 epochs** on Shakespeare dataset (char-level) using MPS device. Final training loss: **~1.509**.
+Trained for **24 epochs** on Shakespeare dataset (char-level) using MPS device. Final training loss: **1.187** (24 epochs, 250 steps/epoch, MPS).
 
 ### 🔹 Generated Text
 

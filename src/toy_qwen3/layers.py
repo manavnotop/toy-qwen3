@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .config import Qwen3Config
+
 
 class FeedForward(nn.Module):
     """Feed-forward network with SwiGLU activation.
@@ -88,14 +90,17 @@ def compute_rope_params(
     theta_base: float = 10000,
     context_length: int = 4096,
     dtype: torch.dtype = torch.float32,
+    freq_config: dict[str, Any] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Precompute rotary positional embedding parameters.
+    """Precompute rotary positional embedding parameters with optional frequency scaling.
 
     Args:
         head_dim: Head dimension (must be even).
         theta_base: Base for the rotary angle computation.
         context_length: Maximum context length.
         dtype: Data type for the output tensors.
+        freq_config: Optional frequency configuration for RoPE interpolation.
+            Contains: original_context_length, low_freq_factor, high_freq_factor, factor.
 
     Returns:
         Tuple of (cos, sin) tensors of shape (context_length, head_dim)
@@ -104,7 +109,44 @@ def compute_rope_params(
         msg = "Embedding dimension must be even"
         raise ValueError(msg)
 
-    inv_freq = 1.0 / (theta_base ** (torch.arange(0, head_dim, 2, dtype=dtype) / head_dim))
+    if freq_config is not None:
+        # LLaMA-style RoPE frequency scaling
+        original_context_length = freq_config.get("original_context_length", context_length)
+        low_freq_factor = freq_config.get("low_freq_factor", 1)
+        high_freq_factor = freq_config.get("high_freq_factor", 1)
+        factor = freq_config.get("factor", 1)
+
+        # Compute inv_freq with scaling
+        inv_freq = 1.0 / (theta_base ** (torch.arange(0, head_dim, 2, dtype=dtype) / head_dim))
+
+        # Apply frequency scaling based on position
+        low_freq_wavelength = 2 * torch.pi * theta_base / low_freq_factor
+        high_freq_wavelength = 2 * torch.pi * theta_base / high_freq_factor
+
+        wavelengths = 2 * torch.pi * theta_base / inv_freq
+
+        # Smooth transition between low and high frequencies
+        inv_freq_list = []
+        for i in range(0, head_dim // 2):
+            wavelength = wavelengths[i]
+            if wavelength > low_freq_wavelength:
+                inv_freq_list.append(inv_freq[i] / low_freq_factor)
+            elif wavelength < high_freq_wavelength:
+                inv_freq_list.append(inv_freq[i] / high_freq_factor)
+            else:
+                # Smooth transition
+                smooth_factor = (original_context_length / factor - wavelength) / (
+                    original_context_length / factor - high_freq_wavelength
+                )
+                inv_freq_list.append(
+                    inv_freq[i]
+                    * (smooth_factor / low_freq_factor + (1 - smooth_factor) / high_freq_factor)
+                )
+
+        inv_freq = torch.tensor(inv_freq_list, dtype=dtype)
+    else:
+        inv_freq = 1.0 / (theta_base ** (torch.arange(0, head_dim, 2, dtype=dtype) / head_dim))
+
     position = torch.arange(context_length, dtype=dtype)
     angles = position[:, None] * inv_freq[None, :]
     angles = torch.cat([angles, angles], dim=1)
@@ -112,6 +154,31 @@ def compute_rope_params(
     sin = torch.sin(angles)
 
     return cos, sin
+
+
+def compute_rope_params_from_config(
+    cfg: Qwen3Config,
+    dtype: torch.dtype | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Precompute RoPE parameters from Qwen3Config.
+
+    Args:
+        cfg: Qwen3Config instance.
+        dtype: Override dtype for the output tensors.
+
+    Returns:
+        Tuple of (cos, sin) tensors.
+    """
+    if dtype is None:
+        dtype = cfg.dtype
+
+    return compute_rope_params(
+        head_dim=cfg.head_dim,
+        theta_base=cfg.rope_base,
+        context_length=cfg.context_length,
+        dtype=dtype,
+        freq_config=cfg.freq_config,
+    )
 
 
 def apply_rope(

@@ -5,46 +5,38 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from .layers import RMSNormalisation, TransformerBlock, compute_rope_params
+from .config import Qwen3Config
+from .layers import RMSNormalisation, TransformerBlock, compute_rope_params_from_config
 
 
 class Qwen3Model(nn.Module):
     """Qwen3-style transformer model for character-level language modeling.
 
     Args:
-        cfg: Configuration dictionary with keys:
-            - vocab_size: Number of unique tokens
-            - emb_dim: Token embedding dimension
-            - n_layers: Number of transformer layers
-            - n_heads: Number of attention heads
-            - n_kv_groups: Number of key/value groups for GQA
-            - hidden_dim: Feedforward hidden dimension
-            - context_length: Maximum sequence length
-            - rope_base: RoPE base frequency
-            - qk_norm: Whether to apply QK normalization
-            - dtype: Data type for weights
-            - head_dim: Head dimension (auto-computed if None)
+        cfg: Qwen3Config instance or dict with configuration keys.
     """
 
-    def __init__(self, cfg: dict[str, Any]) -> None:
+    def __init__(self, cfg: Qwen3Config | dict[str, Any]) -> None:
         super().__init__()
 
-        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"])
+        # Support both Qwen3Config and dict for backward compatibility
+        if isinstance(cfg, dict):
+            self.cfg = Qwen3Config(**cfg)
+        else:
+            self.cfg = cfg
+
+        cfg = self.cfg
+
+        self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.emb_dim, dtype=cfg.dtype)
 
         self.transformer_blocks = nn.ModuleList(
-            TransformerBlock(cfg) for _ in range(cfg["n_layers"])
+            TransformerBlock(self._to_dict(cfg)) for _ in range(cfg.n_layers)
         )
 
-        self.final_norm = RMSNormalisation(cfg["emb_dim"])
-        self.out_head = nn.Linear(cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"])
+        self.final_norm = RMSNormalisation(cfg.emb_dim)
+        self.out_head = nn.Linear(cfg.emb_dim, cfg.vocab_size, bias=False, dtype=cfg.dtype)
 
-        head_dim = cfg.get("head_dim") or cfg["emb_dim"] // cfg["n_heads"]
-
-        cos, sin = compute_rope_params(
-            head_dim=head_dim,
-            theta_base=cfg["rope_base"],
-            context_length=cfg["context_length"],
-        )
+        cos, sin = compute_rope_params_from_config(cfg)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
 
@@ -53,8 +45,8 @@ class Qwen3Model(nn.Module):
             "causal_mask",
             torch.triu(
                 torch.ones(
-                    cfg["context_length"],
-                    cfg["context_length"],
+                    cfg.context_length,
+                    cfg.context_length,
                     dtype=torch.bool,
                 ),
                 diagonal=1,
@@ -62,7 +54,21 @@ class Qwen3Model(nn.Module):
             persistent=False,
         )
 
-        self.cfg = cfg
+    def _to_dict(self, cfg: Qwen3Config) -> dict[str, Any]:
+        """Convert Qwen3Config to dict for TransformerBlock compatibility."""
+        return {
+            "vocab_size": cfg.vocab_size,
+            "emb_dim": cfg.emb_dim,
+            "n_heads": cfg.n_heads,
+            "n_kv_groups": cfg.n_kv_groups,
+            "n_layers": cfg.n_layers,
+            "hidden_dim": cfg.hidden_dim,
+            "context_length": cfg.context_length,
+            "rope_base": cfg.rope_base,
+            "qk_norm": False,  # Not used in current implementation
+            "dtype": cfg.dtype,
+            "head_dim": cfg.head_dim,
+        }
 
     def forward(self, in_idx: torch.Tensor) -> torch.Tensor:
         """Forward pass through the model.
@@ -83,5 +89,5 @@ class Qwen3Model(nn.Module):
             x = block(x, mask, self.cos, self.sin)
 
         x = self.final_norm(x)
-        logits = self.out_head(x.to(self.cfg["dtype"]))
+        logits = self.out_head(x.to(self.cfg.dtype))
         return logits

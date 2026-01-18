@@ -1,4 +1,6 @@
-"""Configuration and path constants for Toy Qwen3."""
+"""Configuration for Toy Qwen3 model."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -7,65 +9,95 @@ import torch
 
 
 @dataclass
-class ModelConfig:
-    """Configuration for the Qwen3 model architecture.
+class Qwen3Config:
+    """Configuration for the Qwen3 model.
 
-    Args:
+    Attributes:
         vocab_size: Number of unique tokens in the vocabulary.
         emb_dim: Token embedding dimension.
         n_heads: Total number of attention heads.
-        n_kv_groups: Number of key/value groups for group query attention.
+        n_kv_groups: Number of key/value groups for grouped-query attention.
         n_layers: Number of transformer layers.
-        hidden_dim: Feedforward hidden dimension.
-        context_length: Maximum input sequence length.
-        rope_base: Base for rotary positional embeddings.
-        qk_norm: Whether to apply RMSNorm to queries and keys.
-        dtype: Data type for model weights (bfloat16 or float32).
-        head_dim: Head dimension (auto-computed if None).
+        hidden_dim: Feed-forward network hidden dimension.
+        context_length: Maximum sequence length.
+        rope_base: Base theta for rotary position embeddings.
+        dtype: Data type for model parameters.
+        head_dim: Attention head dimension (computed if None).
+        freq_config: Frequency configuration for RoPE interpolation.
     """
 
     vocab_size: int
-    emb_dim: int = 128
-    n_heads: int = 4
+    emb_dim: int = 256
+    n_heads: int = 8
     n_kv_groups: int = 2
-    n_layers: int = 4
-    hidden_dim: int = 128
-    context_length: int = 128
+    n_layers: int = 6
+    hidden_dim: int = 512
+    context_length: int = 256
     rope_base: float = 10000.0
-    qk_norm: bool = False
-    dtype: Any = torch.bfloat16
+    dtype: torch.dtype = torch.float32
     head_dim: int | None = None
+    freq_config: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        """Set head_dim if not specified."""
+        """Compute head_dim if not set."""
         if self.head_dim is None:
             self.head_dim = self.emb_dim // self.n_heads
 
 
-def get_default_config(vocab_size: int, device: str = "cpu") -> dict[str, Any]:
-    """Get default configuration dictionary with device-appropriate dtype.
+def create_qwen3_config(
+    vocab_size: int,
+    emb_dim: int = 256,
+    n_heads: int = 8,
+    n_kv_groups: int = 2,
+    n_layers: int = 6,
+    hidden_dim: int = 512,
+    context_length: int = 256,
+    rope_base: float = 10000.0,
+    dtype: torch.dtype = torch.float32,
+    *,
+    device: str = "cpu",
+) -> Qwen3Config:
+    """Create a Qwen3Config with automatic dtype selection.
 
     Args:
-        vocab_size: Size of the vocabulary.
-        device: Computation device ("cuda", "mps", or "cpu").
+        vocab_size: Number of unique tokens.
+        emb_dim: Token embedding dimension.
+        n_heads: Total number of attention heads.
+        n_kv_groups: Number of key/value groups.
+        n_layers: Number of transformer layers.
+        hidden_dim: Feed-forward hidden dimension.
+        context_length: Maximum sequence length.
+        rope_base: RoPE base theta.
+        dtype: Default dtype (overridden for MPS/CUDA).
+        device: Compute device for automatic dtype selection.
 
     Returns:
-        Configuration dictionary compatible with Qwen3Model.
+        Configured Qwen3Config instance.
     """
-    dtype = torch.float32 if device == "mps" else torch.bfloat16
-    return {
-        "vocab_size": vocab_size,
-        "emb_dim": 128,
-        "n_heads": 4,
-        "n_kv_groups": 2,
-        "n_layers": 4,
-        "hidden_dim": 128,
-        "context_length": 128,
-        "rope_base": 10000.0,
-        "qk_norm": False,
-        "dtype": dtype,
-        "head_dim": None,
-    }
+    if device == "mps":
+        actual_dtype = torch.float32
+    elif device == "cuda":
+        actual_dtype = torch.bfloat16
+    else:
+        actual_dtype = dtype
+
+    return Qwen3Config(
+        vocab_size=vocab_size,
+        emb_dim=emb_dim,
+        n_heads=n_heads,
+        n_kv_groups=n_kv_groups,
+        n_layers=n_layers,
+        hidden_dim=hidden_dim,
+        context_length=context_length,
+        rope_base=rope_base,
+        dtype=actual_dtype,
+        freq_config={
+            "original_context_length": context_length,
+            "low_freq_factor": 8,
+            "high_freq_factor": 1,
+            "factor": 4,
+        },
+    )
 
 
 # Path constants for data and model files

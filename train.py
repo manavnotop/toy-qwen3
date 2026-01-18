@@ -2,24 +2,47 @@
 
 import contextlib
 import json
+import math
 import time
 
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
+from rich import print as rprint
+from rich.console import Console
+from rich.theme import Theme
+from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 
-from src.toy_qwen3 import DATA_PATH, VOCAB_PATH, Qwen3Model, get_default_config
+from src.toy_qwen3 import (
+    DATA_PATH,
+    VOCAB_PATH,
+    Qwen3Model,
+    create_qwen3_config,
+)
+
+# Rich theme for beautiful logging
+custom_theme = Theme(
+    {
+        "info": "cyan",
+        "warning": "yellow",
+        "error": "red",
+        "success": "green",
+        "loss": "magenta",
+        "lr": "yellow",
+    }
+)
+console = Console(theme=custom_theme)
 
 # Load the dataset
-print("Loading dataset...")
+rprint("[bold cyan]Loading dataset...[/]")
 with open(DATA_PATH, "r", encoding="utf-8") as f:
     text = f.read()
 
 # Build character-level vocabulary
 chars = sorted(list(set(text)))
-print("chars =", repr(chars))
+console.print(f"[info]Vocabulary size:[/] {len(chars)} characters")
 vocab_size = len(chars)
 
 # Mapping characters and token indices
@@ -39,7 +62,7 @@ def decode(tensor: torch.Tensor) -> str:
 
 # Encode dataset into token ids
 data = encode(text)
-print(f"Dataset loaded: {len(text):,} chars, vocab_size={vocab_size}")
+console.print(f"[info]Dataset loaded:[/] {len(text):,} chars, [info]vocab_size:[/] {vocab_size}")
 
 # Select device - check CUDA first for proper autocast support
 if torch.cuda.is_available():
@@ -48,31 +71,50 @@ elif torch.backends.mps.is_available():
     device = "mps"
 else:
     device = "cpu"
-print(f"Using device: {device}")
+console.print(f"[info]Using device:[/] {device}")
 
-cfg = get_default_config(vocab_size, device)
+# Create config (matches LLaMA32 configuration)
+cfg = create_qwen3_config(vocab_size=vocab_size, device=device)
 
 model = Qwen3Model(cfg).to(device)
 if device != "mps":
-    model = model.to(cfg["dtype"])
+    model = model.to(cfg.dtype)
+
 optimizer = AdamW(model.parameters(), lr=3e-4)
 loss_fn = nn.CrossEntropyLoss()
 
-seq_len = cfg["context_length"]
-batch_size = 4
+# Training hyperparameters (matching LLaMA32)
+seq_len = cfg.context_length
+batch_size = 8
 epochs = 24
 steps_per_epoch = 250
+total_steps = epochs * steps_per_epoch
 losses = []
 
+# Learning rate scheduler with warmup and cosine decay
+warmup_steps = 100
+
+
+def lr_lambda(step: int) -> float:
+    """Learning rate schedule: linear warmup + cosine decay."""
+    if step < warmup_steps:
+        return step / warmup_steps
+    # Cosine decay
+    progress = (step - warmup_steps) / (total_steps - warmup_steps)
+    return 0.5 * (1 + math.cos(math.pi * progress))
+
+
+scheduler = LambdaLR(optimizer, lr_lambda)
+
 model.train()
-print(f"\nStarting training: {epochs} epochs × {steps_per_epoch} steps")
+rprint(f"\n[bold cyan]Starting training:[/] {epochs} epochs × {steps_per_epoch} steps")
 
 start_time = time.time()
 
 # Use automatic mixed precision for CUDA
 use_autocast = device == "cuda"
 autocast_context = (
-    torch.autocast(device_type="cuda", dtype=cfg["dtype"])
+    torch.autocast(device_type="cuda", dtype=cfg.dtype)
     if use_autocast
     else contextlib.nullcontext()
 )
@@ -97,14 +139,26 @@ for epoch in range(epochs):
 
         loss.backward()
         optimizer.step()
+        scheduler.step()
+
+        # Update progress bar with current loss
+        current_lr = optimizer.param_groups[0]["lr"]
+        progress_bar.set_postfix({"loss": f"{loss.item():.3f}", "lr": f"{current_lr:.2e}"})
 
         epoch_loss += loss.item()
-        progress_bar.set_postfix({"loss": f"{loss.item():.3f}"})
 
     avg_loss = epoch_loss / steps_per_epoch
     losses.append(avg_loss)
     elapsed = time.time() - start_time
-    print(f"Epoch {epoch + 1} | Avg Loss: {avg_loss:.3f} | Time: {elapsed:.0f}s")
+    current_lr = optimizer.param_groups[0]["lr"]
+
+    # Beautiful epoch summary
+    console.print(
+        f"[cyan]Epoch {epoch + 1:2d}[/] | "
+        f"[magenta]Loss: {avg_loss:.3f}[/] | "
+        f"[lr]LR: {current_lr:.2e}[/] | "
+        f"[success]Time: {elapsed:.0f}s[/]"
+    )
 
     # Sample generation
     model.eval()
@@ -116,10 +170,10 @@ for epoch in range(epochs):
         next_token = torch.multinomial(probs, num_samples=1)
 
     generated = decode(torch.cat([input_seq[0], next_token[0]]))
-    print("Sample generation:", repr(generated))
+    console.print(f"[info]Sample:[/] {repr(generated[:80])}...")
     model.train()
 
-print("\nTraining complete! Model saved.")
+rprint("\n[bold green]Training complete![/] Model saved.")
 
 # Plot the loss curve
 plt.figure(figsize=(8, 4))
@@ -129,15 +183,15 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.legend()
 plt.grid(True)
-print("Loss curve saved as 'loss_curve.png'")
+console.print("[info]Loss curve saved as 'loss_curve.png'[/]")
 
 model_save_path = f"toy_qwen3_{epochs}epochs.pth"
 torch.save(model.state_dict(), model_save_path)
-print(f"Model saved to '{model_save_path}'")
+console.print(f"[success]Model saved to '{model_save_path}'[/]")
 
 plot_save_path = f"assets/loss_curve_{epochs}epochs.png"
 plt.savefig(plot_save_path)
-print(f"Loss curve saved as '{plot_save_path}'")
+console.print(f"[info]Loss curve saved as '{plot_save_path}'[/]")
 
 with open(VOCAB_PATH, "w", encoding="utf-8") as f:
     json.dump(chars, f)

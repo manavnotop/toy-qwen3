@@ -4,8 +4,20 @@ import contextlib
 import json
 
 import torch
+from rich import print as rprint
+from rich.console import Console
+from rich.theme import Theme
 
-from src.toy_qwen3 import DEFAULT_MODEL_PATH, VOCAB_PATH, Qwen3Model, get_default_config
+from src.toy_qwen3 import DEFAULT_MODEL_PATH, VOCAB_PATH, Qwen3Model, create_qwen3_config
+
+# Rich theme for beautiful logging
+custom_theme = Theme(
+    {
+        "info": "cyan",
+        "success": "green",
+    }
+)
+console = Console(theme=custom_theme)
 
 # Select device - check CUDA first for proper autocast support
 if torch.cuda.is_available():
@@ -14,7 +26,7 @@ elif torch.backends.mps.is_available():
     device = "mps"
 else:
     device = "cpu"
-print(f"Using device: {device}")
+console.print(f"[info]Using device:[/] {device}")
 
 # Load character vocabulary
 with open(VOCAB_PATH, "r", encoding="utf-8") as f:
@@ -30,7 +42,7 @@ def decode(tensor: torch.Tensor) -> str:
     return "".join([idx_to_char[i.item()] for i in tensor])
 
 
-cfg = get_default_config(len(chars), device)
+cfg = create_qwen3_config(vocab_size=len(chars), device=device)
 
 
 def generate(
@@ -63,13 +75,13 @@ def generate(
     )
 
     autocast_context = (
-        torch.autocast(device_type="cuda", dtype=cfg["dtype"])
+        torch.autocast(device_type="cuda", dtype=cfg.dtype)
         if device == "cuda"
         else contextlib.nullcontext()
     )
 
     for _ in range(max_new_tokens):
-        input_ids = encoded[:, -cfg["context_length"] :]
+        input_ids = encoded[:, -cfg.context_length :]
         with torch.no_grad(), autocast_context:
             logits = model(input_ids)
             logits = logits[:, -1, :] / temperature
@@ -80,12 +92,13 @@ def generate(
     return decode(encoded[0])
 
 
-model = Qwen3Model(cfg).to(device).to(cfg["dtype"])
+model = Qwen3Model(cfg).to(device).to(cfg.dtype)
 model.load_state_dict(torch.load(DEFAULT_MODEL_PATH, weights_only=True))
 model.eval()
 
-print("Model loaded and ready for generation!\n")
+console.print("[success]Model loaded and ready for generation![/]\n")
 
 prompt = "To be or not to be, that is the"
-print(f"Prompt: {repr(prompt)}")
-print("Generated:", repr(generate(model, prompt)))
+console.print(f"[info]Prompt:[/] {repr(prompt)}")
+result = generate(model, prompt)
+console.print(f"[info]Generated:[/] {repr(result)}")
