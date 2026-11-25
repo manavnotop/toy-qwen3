@@ -45,6 +45,21 @@ uv run generate.py
 
 ---
 
+## TypeScript greeting helper
+
+`src/greet.ts` exports `greet(name: string): string`, which returns a greeting
+in the form `Hello, name!` using the supplied name.
+
+```ts
+import { greet } from "./src/greet";
+
+greet("Ada"); // "Hello, Ada!"
+```
+
+This standalone helper is separate from the Python model and training scripts.
+
+---
+
 ## 📁 Directory Structure
 
 ```
