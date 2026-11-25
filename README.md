@@ -45,6 +45,12 @@ uv run generate.py
 
 ---
 
+## 🫶 Greeting helper
+
+`src/greet.ts` exports a small `greet(name)` helper that returns `"Hello, name!"` for the name you pass in.
+
+---
+
 ## 📁 Directory Structure
 
 ```
