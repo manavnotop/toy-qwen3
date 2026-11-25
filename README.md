@@ -45,17 +45,9 @@ uv run generate.py
 
 ---
 
-## `src/greet.ts`
+## 🫶 Greeting helper
 
-This file exports a small helper:
-
-```ts
-import { greet } from "./src/greet";
-
-greet("Ada"); // "Hello, Ada!"
-```
-
-`greet(name)` returns `Hello, name!` for any string you pass in.
+`src/greet.ts` exports a small `greet(name)` helper that returns `"Hello, name!"` for the name you pass in.
 
 ---
 
